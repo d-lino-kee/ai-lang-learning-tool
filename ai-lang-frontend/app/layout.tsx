@@ -27,7 +27,18 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <div className="relative min-h-screen bg-black text-white">
+          <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-end px-6 py-4">
+            <button
+              type="button"
+              aria-label="Help"
+              className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-zinc-700 bg-black/60 text-sm font-semibold text-zinc-200 shadow-sm backdrop-blur hover:border-zinc-400 hover:text-white"
+            >
+              ?
+            </button>
+          </header>
+          {children}
+        </div>
       </body>
     </html>
   );
