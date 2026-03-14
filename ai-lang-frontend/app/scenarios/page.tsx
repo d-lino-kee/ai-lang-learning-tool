@@ -50,7 +50,7 @@ export default function ScenariosPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-black text-white">
       <main className="flex w-full max-w-3xl flex-col items-center gap-8 px-6 py-12 text-center">
-        <Face speaking={isRecording} />
+        <Face speaking={false} />
 
         <section className="w-full max-w-3xl rounded-3xl border border-zinc-800 bg-zinc-900/40 p-5 shadow-lg">
           <div className="flex flex-col items-center gap-4">
