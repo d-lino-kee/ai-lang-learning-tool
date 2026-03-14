@@ -8,3 +8,8 @@ gcp-sa-key.b64
 playwright-report/
 test-results/
 *.log
+.env
+gcp-credentials.json
+node_modules/
+dist/
+db-data/
