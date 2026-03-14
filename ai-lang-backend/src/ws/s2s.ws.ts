@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { runS2SPipeline } from '../pipeline/s2s.pipeline';
 import { logInteraction } from '../db/interactions.db';
 import { validateWsDeviceId } from '../middleware/auth.middleware';
+import { getHistory, getImmersionLevel, appendToHistory } from '../ai/history.store';
 import {
   WsConfigFrame,
   WsServerFrame,
@@ -25,9 +26,7 @@ export function setupWebSocket(wss: WebSocketServer): void {
       isProcessing: false,
     };
 
-    // ── Incoming messages ──────────────────────────────────────────────────
     ws.on('message', async (data, isBinary) => {
-      // Binary frames = raw audio chunks
       if (isBinary) {
         if (!session.config) {
           sendFrame(ws, {
@@ -41,7 +40,6 @@ export function setupWebSocket(wss: WebSocketServer): void {
         return;
       }
 
-      // Text frames = JSON control messages
       let frame: WsClientFrame;
       try {
         frame = JSON.parse(data.toString()) as WsClientFrame;
@@ -76,9 +74,6 @@ export function setupWebSocket(wss: WebSocketServer): void {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Process accumulated audio chunks through the pipeline
-// ─────────────────────────────────────────────────────────────────────────────
 async function processSession(ws: WebSocket, session: SessionState): Promise<void> {
   if (session.isProcessing || !session.config) return;
   session.isProcessing = true;
@@ -92,21 +87,25 @@ async function processSession(ws: WebSocket, session: SessionState): Promise<voi
     return;
   }
 
-  // Notify client: STT in progress
   sendFrame(ws, { type: 'processing', stage: 'stt' });
 
-  const request: S2SRequest = {
+  // Use stored immersion level if config didn't provide one explicitly
+  const storedImmersion = getImmersionLevel(config.deviceId, config.scenarioId);
+  const immersionLevel = config.immersionLevel ?? storedImmersion;
+  const conversationHistory = getHistory(config.deviceId, config.scenarioId);
+
+  const request: S2SRequest & { conversationHistory: typeof conversationHistory } = {
     audioBase64: combinedAudio.toString('base64'),
     audioMimeType: config.audioMimeType,
-    sourceLanguage: config.sourceLanguage,
+    nativeLanguage: config.nativeLanguage,
     targetLanguage: config.targetLanguage,
+    immersionLevel,
     scenarioId: config.scenarioId,
     deviceId: config.deviceId,
+    conversationHistory,
   };
 
-  // Hook into the pipeline — emit processing frames at each stage
-  // (The pipeline itself is atomic; we send stage notifications before calling it)
-  sendFrame(ws, { type: 'processing', stage: 'translation' });
+  sendFrame(ws, { type: 'processing', stage: 'ai' });
 
   const result = await runS2SPipeline(request).catch((err) => ({
     success: false as const,
@@ -114,16 +113,25 @@ async function processSession(ws: WebSocket, session: SessionState): Promise<voi
     message: (err as Error).message,
   }));
 
-  // Non-blocking DB log
+  if (result.success) {
+    appendToHistory(
+      config.deviceId,
+      result.sourceText,
+      result.aiResponseText,
+      config.scenarioId
+    );
+  }
+
   setImmediate(() => {
     logInteraction({
       deviceId: config.deviceId,
       scenarioId: config.scenarioId ?? null,
-      sourceLanguage: config.sourceLanguage,
+      nativeLanguage: config.nativeLanguage,
       targetLanguage: config.targetLanguage,
+      immersionLevel,
       success: result.success,
       sourceText: result.success ? result.sourceText : null,
-      translatedText: result.success ? result.translatedText : null,
+      aiResponseText: result.success ? result.aiResponseText : null,
       audioHint: result.success ? null : result.audioHint,
       metrics: result.success ? result.metrics : null,
     }).catch((err) => console.error('[db] ws logInteraction failed:', err));
@@ -137,19 +145,16 @@ async function processSession(ws: WebSocket, session: SessionState): Promise<voi
       type: 'result',
       audioBase64: result.audioBase64,
       sourceText: result.sourceText,
-      translatedText: result.translatedText,
+      aiResponseText: result.aiResponseText,
+      immersionLevel: result.immersionLevel,
       metrics: result.metrics,
     });
   }
 
-  // Reset for next recording
   session.audioChunks = [];
   session.isProcessing = false;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: safely send a JSON frame
-// ─────────────────────────────────────────────────────────────────────────────
 function sendFrame(ws: WebSocket, frame: WsServerFrame): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(frame));

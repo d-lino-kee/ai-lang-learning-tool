@@ -1,60 +1,58 @@
 import { pool } from './connection';
-import { PipelineMetrics, AudioHintCode, SupportedLanguage } from '../types';
+import { PipelineMetrics, AudioHintCode, SupportedLanguage, ImmersionLevel } from '../types';
 
 export interface InteractionLog {
   deviceId: string;
   scenarioId: number | null;
-  sourceLanguage: SupportedLanguage;
+  nativeLanguage: SupportedLanguage;
   targetLanguage: SupportedLanguage;
+  immersionLevel: ImmersionLevel;
   success: boolean;
   sourceText: string | null;
-  translatedText: string | null;
+  aiResponseText: string | null;
   audioHint: AudioHintCode | null;
   metrics: PipelineMetrics | null;
 }
 
 export async function logInteraction(log: InteractionLog): Promise<void> {
-  // Upsert device to users table (device-based identity — no accounts needed)
   await pool.execute(
     `INSERT INTO users (device_id) VALUES (?)
      ON DUPLICATE KEY UPDATE last_seen_at = CURRENT_TIMESTAMP`,
     [log.deviceId]
   );
 
-  // Get the user's internal ID
   const [rows] = await pool.execute<any[]>(
     'SELECT id FROM users WHERE device_id = ?',
     [log.deviceId]
   );
   const userId: number = rows[0].id;
 
-  // Insert interaction record
   await pool.execute(
     `INSERT INTO interactions (
       user_id, scenario_id,
-      source_language, target_language,
-      source_text, translated_text,
+      native_language, target_language, immersion_level,
+      source_text, ai_response_text,
       success, audio_hint_code,
-      stt_latency_ms, translation_latency_ms,
+      stt_latency_ms, ai_latency_ms,
       tts_latency_ms, total_latency_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       log.scenarioId,
-      log.sourceLanguage,
+      log.nativeLanguage,
       log.targetLanguage,
+      log.immersionLevel,
       log.sourceText,
-      log.translatedText,
+      log.aiResponseText,
       log.success ? 1 : 0,
       log.audioHint,
       log.metrics?.sttLatencyMs ?? null,
-      log.metrics?.translationLatencyMs ?? null,
+      log.metrics?.aiLatencyMs ?? null,
       log.metrics?.ttsLatencyMs ?? null,
       log.metrics?.totalLatencyMs ?? null,
     ]
   );
 
-  // Update scenario progress if applicable
   if (log.scenarioId && log.success) {
     await pool.execute(
       `INSERT INTO scenario_progress (user_id, scenario_id, attempts, last_attempted_at)
