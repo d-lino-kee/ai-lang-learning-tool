@@ -1,0 +1,88 @@
+# ═══════════════════════════════════════════════════════════════════
+#  LinguaBlob — Docker Compose
+#  Usage:
+#    Dev:  docker compose --profile dev up
+#    Prod: docker compose --profile prod up -d
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  # ─── MySQL ───
+  db:
+    image: mysql:8.0
+    profiles: ["dev", "prod"]
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${DB_NAME:-linguablob}
+      MYSQL_USER: ${DB_USER:-linguablob}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-change_me_in_production}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ─── Backend (Dev — hot reload) ───
+  api-dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      target: builder
+    command: npx tsx watch src/server.ts
+    working_dir: /app
+    volumes:
+      - ./src:/app/src:ro
+      - ./package.json:/app/package.json:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+    ports:
+      - "${PORT:-3001}:3001"
+      - "9229:9229"  # Node debugger
+    environment:
+      NODE_ENV: development
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-linguablob}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_in_production}
+      DB_NAME: ${DB_NAME:-linguablob}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-do-not-use-in-prod}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      GCP_SA_KEY_BASE64: ${GCP_SA_KEY_BASE64:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ─── Backend (Prod — optimised) ───
+  api-prod:
+    profiles: ["prod"]
+    build:
+      context: .
+      target: production
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-linguablob}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-linguablob}
+      DB_POOL_MAX: 20
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      GCP_SA_KEY_BASE64: ${GCP_SA_KEY_BASE64}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      RATE_LIMIT_MAX: 60
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mysql_data:

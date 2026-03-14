@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.github
+tests
+docs
+*.md
+.env
+.env.*
+playwright-report
+test-results
+gcp-sa-key.json
+gcp-sa-key.b64

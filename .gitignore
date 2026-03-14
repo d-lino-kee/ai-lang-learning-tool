@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.test
+gcp-sa-key.json
+gcp-sa-key.b64
+playwright-report/
+test-results/
+*.log
