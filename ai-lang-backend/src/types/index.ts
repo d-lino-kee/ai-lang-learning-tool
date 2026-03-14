@@ -9,9 +9,9 @@
 export type SupportedLanguage = 'en-US' | 'fr-FR' | 'es-ES' | 'ar-SA' | 'pt-BR';
 
 // ── Immersion level — controls how much target language the AI uses ───────────
-// 0 = fully in native language (English)
-// 100 = fully in target language (French)
-// The app starts at 0 and gradually increases this as the user progresses.
+// 0 = fully in native language (e.g. English)
+// 100 = fully in target language (e.g. French)
+// Advances automatically every 5 successful exchanges
 export type ImmersionLevel = 0 | 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 90 | 100;
 
 // ── REST API ──────────────────────────────────────────────────────────────────
@@ -34,13 +34,23 @@ export interface S2SRequest {
 
 export interface S2SResponse {
   success: true;
-  /** Base64-encoded MP3 audio of the AI's response */
+  /** Combined feedback + reply as a single audio track — simplest for Engineer A */
   audioBase64: string;
+  /** Feedback audio only — e.g. "Almost! Say je veux, not je vouloir" */
+  feedbackAudioBase64: string;
+  /** Conversational reply audio only — the continuation after feedback */
+  replyAudioBase64: string;
   /** What the user said (transcribed from their audio) */
   sourceText: string;
-  /** The AI's generated response text — for progress logging, never shown in UI */
+  /** Full AI response text (feedback + reply combined) — for logging */
   aiResponseText: string;
-  /** The immersion level that was used for this response */
+  /** Just the feedback portion — for logging */
+  feedbackText: string;
+  /** Just the conversational reply portion — for logging */
+  replyText: string;
+  /** Whether the user attempted to speak in the target language this turn */
+  hadTargetLanguage: boolean;
+  /** The immersion level active for this response */
   immersionLevel: ImmersionLevel;
   metrics: PipelineMetrics;
 }
@@ -79,12 +89,17 @@ export interface WsProcessingFrame {
   stage: 'stt' | 'ai' | 'tts';
 }
 
-/** Server → client: final synthesized audio */
+/** Server → client: final synthesized audio with feedback and reply separated */
 export interface WsResultFrame {
   type: 'result';
   audioBase64: string;
+  feedbackAudioBase64: string;
+  replyAudioBase64: string;
   sourceText: string;
   aiResponseText: string;
+  feedbackText: string;
+  replyText: string;
+  hadTargetLanguage: boolean;
   immersionLevel: ImmersionLevel;
   metrics: PipelineMetrics;
 }
@@ -116,19 +131,18 @@ export interface PipelineMetrics {
 // ── Audio hint codes ──────────────────────────────────────────────────────────
 /** Each code maps to a specific audio file in the frontend's /earcons/ folder */
 export type AudioHintCode =
-  | 'ERR_NO_SPEECH'        // No speech detected — play "try again" chime
+  | 'ERR_NO_SPEECH'        // No speech detected
   | 'ERR_LOW_CONFIDENCE'   // Speech recognized but low confidence
   | 'ERR_AI_FAIL'          // Gemini AI failure
   | 'ERR_TTS_FAIL'         // TTS synthesis failure
   | 'ERR_UNSUPPORTED_LANG' // Language pair not supported
   | 'ERR_AUDIO_TOO_LONG'   // Audio exceeds 60-second limit
-  | 'ERR_RATE_LIMITED'     // Too many requests — play "slow down" sound
+  | 'ERR_RATE_LIMITED'     // Too many requests
   | 'ERR_INTERNAL';        // Unexpected server error
 
 // ── Scenario types (shared with DB layer / Eng C) ────────────────────────────
 export interface Scenario {
   id: number;
   slug: 'job_application' | 'doctor_appointment' | 'everyday_language' | 'custom';
-  /** Prompt injected into Gemini for domain-specific vocabulary */
   aiContext: string;
 }

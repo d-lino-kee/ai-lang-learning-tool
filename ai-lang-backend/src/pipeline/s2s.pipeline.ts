@@ -28,12 +28,20 @@ export interface S2SRequestWithHistory extends S2SRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main pipeline: STT → Gemini AI (with immersion) → TTS
+// Main pipeline: STT → Gemini AI (feedback + reply) → TTS
 //
-// The TTS language used depends on the immersion level:
-// - At low immersion: respond in the native language voice
-// - At high immersion: respond in the target language voice
-// - In between: use the target language voice (Gemini mixes languages in the text)
+// The response now contains two audio tracks:
+// - feedbackAudioBase64: the AI's feedback on what the user said
+//   (e.g. "Almost! Say je veux, not je vouloir")
+// - replyAudioBase64: the AI's conversational continuation
+//   (e.g. "Now tell me, when is your appointment?")
+//
+// Engineer A can use these separately to animate the Blob differently —
+// a "thinking/correcting" expression during feedback, then back to
+// "talking" expression for the reply.
+//
+// Both are also available as a single combined audio track (audioBase64)
+// if Engineer A just wants to play them back to back without different animations.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function runS2SPipeline(
   req: S2SRequestWithHistory
@@ -41,7 +49,7 @@ export async function runS2SPipeline(
   const pipelineStart = Date.now();
   const audioBuffer = Buffer.from(req.audioBase64, 'base64');
 
-  // ── Step 1: Speech-to-Text (always in the user's native language) ──────────
+  // ── Step 1: Speech-to-Text ────────────────────────────────────────────────
   const sttStart = Date.now();
   let sourceText: string;
   try {
@@ -55,11 +63,11 @@ export async function runS2SPipeline(
   }
   const sttLatencyMs = Date.now() - sttStart;
 
-  // ── Step 2: Gemini generates a response mixed according to immersion level ──
+  // ── Step 2: Gemini generates feedback + reply ─────────────────────────────
   const aiStart = Date.now();
-  let aiResponse: string;
+  let aiResult: Awaited<ReturnType<typeof generateAIResponse>>;
   try {
-    aiResponse = await generateAIResponse(
+    aiResult = await generateAIResponse(
       sourceText,
       req.nativeLanguage,
       req.targetLanguage,
@@ -72,16 +80,40 @@ export async function runS2SPipeline(
   }
   const aiLatencyMs = Date.now() - aiStart;
 
-  // ── Step 3: TTS — use target language voice once any immersion has started ──
-  // At immersion 0 use the native voice; otherwise use the target voice.
-  // This ensures the pronunciation the user hears matches what they're learning.
-  const ttsLanguage: SupportedLanguage =
+  // ── Step 3: TTS — synthesize feedback and reply ───────────────────────────
+  // Feedback is spoken in the native language voice (it's an explanation/correction).
+  // Reply is spoken in the target language voice once any immersion has started.
+  // At immersion 0 both use the native voice.
+  const feedbackVoice: SupportedLanguage =
+    req.immersionLevel <= 40 ? req.nativeLanguage : req.targetLanguage;
+
+  const replyVoice: SupportedLanguage =
     req.immersionLevel === 0 ? req.nativeLanguage : req.targetLanguage;
 
   const ttsStart = Date.now();
+  let feedbackAudioBase64: string;
+  let replyAudioBase64: string;
   let audioBase64: string;
+
   try {
-    audioBase64 = await synthesizeSpeech(aiResponse, ttsLanguage);
+    // Run feedback and reply TTS in parallel to keep latency low
+    const [feedbackAudio, replyAudio] = await Promise.all([
+      // Only synthesize feedback separately if there is a reply to separate it from
+      aiResult.reply
+        ? synthesizeSpeech(aiResult.feedback, feedbackVoice)
+        : synthesizeSpeech(aiResult.feedback, feedbackVoice),
+      aiResult.reply
+        ? synthesizeSpeech(aiResult.reply, replyVoice)
+        : Promise.resolve(''),
+    ]);
+
+    feedbackAudioBase64 = feedbackAudio;
+    replyAudioBase64 = replyAudio;
+
+    // Also synthesize the full combined text as a single audio track
+    // so Engineer A has the option to just play one thing
+    audioBase64 = await synthesizeSpeech(aiResult.fullText, replyVoice);
+
   } catch (err) {
     return buildError('ERR_TTS_FAIL', `TTS failed: ${(err as Error).message}`);
   }
@@ -97,9 +129,18 @@ export async function runS2SPipeline(
 
   return {
     success: true,
+    // Combined audio — play this if you want everything in one go
     audioBase64,
+    // Separated audio — use these if you want different Blob animations
+    feedbackAudioBase64,
+    replyAudioBase64,
+    // Text versions — for logging and debugging
     sourceText,
-    aiResponseText: aiResponse,
+    aiResponseText: aiResult.fullText,
+    feedbackText: aiResult.feedback,
+    replyText: aiResult.reply,
+    // Whether the user attempted the target language this turn
+    hadTargetLanguage: aiResult.hadTargetLanguage,
     immersionLevel: req.immersionLevel,
     metrics,
   };
@@ -158,7 +199,7 @@ async function synthesizeSpeech(
     },
     audioConfig: {
       audioEncoding: 'MP3',
-      speakingRate: 0.85, // Slightly slower — helps language learners follow along
+      speakingRate: 0.85,
       pitch: 0.0,
       effectsProfileId: ['headphone-class-device'],
     },

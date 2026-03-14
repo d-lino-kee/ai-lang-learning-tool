@@ -3,7 +3,7 @@ import { runS2SPipeline, S2SRequestWithHistory } from '../pipeline/s2s.pipeline'
 jest.mock('@google-cloud/speech', () => ({
   SpeechClient: jest.fn().mockImplementation(() => ({
     recognize: jest.fn().mockResolvedValue([{
-      results: [{ alternatives: [{ transcript: 'Hello I would like to apply for the job' }] }],
+      results: [{ alternatives: [{ transcript: 'je veux un rendez-vous' }] }],
     }]),
   })),
 }));
@@ -17,9 +17,12 @@ jest.mock('@google-cloud/text-to-speech', () => ({
 }));
 
 jest.mock('../ai/conversation.ai', () => ({
-  generateAIResponse: jest.fn().mockResolvedValue(
-    'That is great! In French we say "Bonjour". That means hello!'
-  ),
+  generateAIResponse: jest.fn().mockResolvedValue({
+    feedback: 'Presque! Say je voudrais, not je veux.',
+    reply: 'Très bien. Quel jour préférez-vous?',
+    fullText: 'Presque! Say je voudrais, not je veux. Très bien. Quel jour préférez-vous?',
+    hadTargetLanguage: true,
+  }),
 }));
 
 import { generateAIResponse } from '../ai/conversation.ai';
@@ -30,59 +33,75 @@ const baseRequest: S2SRequestWithHistory = {
   audioMimeType: 'audio/webm',
   nativeLanguage: 'en-US',
   targetLanguage: 'fr-FR',
-  immersionLevel: 10,
-  scenarioId: 1,
+  immersionLevel: 50,
+  scenarioId: 2,
   deviceId: 'test-device',
   conversationHistory: [],
 };
 
-describe('S2S Pipeline', () => {
+describe('S2S Pipeline — feedback + reply', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('returns success with correct fields on happy path', async () => {
+  it('returns all feedback and reply fields on success', async () => {
     const result = await runS2SPipeline(baseRequest);
 
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.sourceText).toBe('Hello I would like to apply for the job');
-    expect(result.aiResponseText).toContain('Bonjour');
-    expect(result.immersionLevel).toBe(10);
+
+    expect(result.feedbackText).toBe('Presque! Say je voudrais, not je veux.');
+    expect(result.replyText).toBe('Très bien. Quel jour préférez-vous?');
+    expect(result.aiResponseText).toContain('Presque');
+    expect(result.hadTargetLanguage).toBe(true);
+    expect(result.feedbackAudioBase64).toBeTruthy();
+    expect(result.replyAudioBase64).toBeTruthy();
     expect(result.audioBase64).toBeTruthy();
   });
 
-  it('passes immersion level to the AI', async () => {
-    await runS2SPipeline({ ...baseRequest, immersionLevel: 50 });
+  it('calls TTS three times — feedback, reply, and combined', async () => {
+    const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
+    const mockSynthesize = jest.fn().mockResolvedValue([{ audioContent: Buffer.from('mp3') }]);
+    TextToSpeechClient.mockImplementation(() => ({ synthesizeSpeech: mockSynthesize }));
+
+    await runS2SPipeline(baseRequest);
+
+    // 2 parallel (feedback + reply) + 1 combined = 3 calls
+    expect(mockSynthesize).toHaveBeenCalledTimes(3);
+  });
+
+  it('uses native voice for feedback at low immersion', async () => {
+    const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
+    const mockSynthesize = jest.fn().mockResolvedValue([{ audioContent: Buffer.from('mp3') }]);
+    TextToSpeechClient.mockImplementation(() => ({ synthesizeSpeech: mockSynthesize }));
+
+    await runS2SPipeline({ ...baseRequest, immersionLevel: 20 });
+
+    // First call is feedback — should use native (en-US) voice
+    const feedbackCall = mockSynthesize.mock.calls[0][0];
+    expect(feedbackCall.voice.languageCode).toBe('en-US');
+  });
+
+  it('uses target voice for feedback at high immersion', async () => {
+    const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
+    const mockSynthesize = jest.fn().mockResolvedValue([{ audioContent: Buffer.from('mp3') }]);
+    TextToSpeechClient.mockImplementation(() => ({ synthesizeSpeech: mockSynthesize }));
+
+    await runS2SPipeline({ ...baseRequest, immersionLevel: 60 });
+
+    const feedbackCall = mockSynthesize.mock.calls[0][0];
+    expect(feedbackCall.voice.languageCode).toBe('fr-FR');
+  });
+
+  it('passes immersion level to AI', async () => {
+    await runS2SPipeline({ ...baseRequest, immersionLevel: 70 });
 
     expect(mockAI).toHaveBeenCalledWith(
       expect.any(String),
       'en-US',
       'fr-FR',
-      50,
+      70,
       [],
-      1
+      2
     );
-  });
-
-  it('uses native language voice at immersion level 0', async () => {
-    const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
-    const mockSynthesize = jest.fn().mockResolvedValue([{ audioContent: Buffer.from('mp3') }]);
-    TextToSpeechClient.mockImplementation(() => ({ synthesizeSpeech: mockSynthesize }));
-
-    await runS2SPipeline({ ...baseRequest, immersionLevel: 0 });
-
-    const callArgs = mockSynthesize.mock.calls[0][0];
-    expect(callArgs.voice.languageCode).toBe('en-US');
-  });
-
-  it('uses target language voice at immersion level > 0', async () => {
-    const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
-    const mockSynthesize = jest.fn().mockResolvedValue([{ audioContent: Buffer.from('mp3') }]);
-    TextToSpeechClient.mockImplementation(() => ({ synthesizeSpeech: mockSynthesize }));
-
-    await runS2SPipeline({ ...baseRequest, immersionLevel: 10 });
-
-    const callArgs = mockSynthesize.mock.calls[0][0];
-    expect(callArgs.voice.languageCode).toBe('fr-FR');
   });
 
   it('returns ERR_NO_SPEECH when STT is empty', async () => {
