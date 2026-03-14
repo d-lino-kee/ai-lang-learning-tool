@@ -1,4 +1,4 @@
-# Awaaz — AI-Powered Voice-First Language Learning for Low-Literacy Users
+# Awaaz — AI-Powered Voice-First Language Learning
 
 **Awaaz** is an **AI-powered, oral-first language learning tool** built for people who may not be fully literate in either their native language or the language they are learning. It is designed to support refugees and newcomers who rely primarily on spoken communication rather than reading or writing.
 
